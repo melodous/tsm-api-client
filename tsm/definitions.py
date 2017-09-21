@@ -1,8 +1,7 @@
-from __future__ import (absolute_import, unicode_literals)
 from ctypes import c_char, c_char_p, c_ubyte, c_short, c_ushort, c_int, c_uint, \
     c_ulong, c_long, Structure, Union, POINTER
 
-__author__ = 'bbrauns'
+__author__ = 'Björn Braunschweig <bbrauns@gwdg.de>'
 
 dsInt8_t = c_char
 dsUint8_t = c_ubyte
@@ -408,7 +407,7 @@ class qryRespArchiveData(Structure):
         ('expDate', dsmDate),
         ('descr', c_char * (DSM_MAX_DESCR_LENGTH + 1)),
         ('objInfolen', dsUint16_t),
-        ('objInfo', c_char * (DSM_MAX_OBJINFO_LENGTH)),
+        ('objInfo', c_char * DSM_MAX_OBJINFO_LENGTH),
         ('restoreOrderExt', dsUint160_t),
         ('sizeEstimate', dsStruct64_t),
         ('compressType', dsUint8_t),
@@ -500,3 +499,41 @@ class dsmDelInfo(Union):
         ('archInfo', delArch),
         ('backIDInfo', delBackID)
     ]
+
+dsmLogSeverity = c_int
+dsmLogType = c_int
+
+
+# noinspection PyPep8Naming
+class dsmLogTypeEnum(object):
+    logServer, logLocal, logBoth = list(range(3))
+
+
+# noinspection PyPep8Naming
+class dsmLogSeverityEnum(object):
+    logSevInfo, logSevWarning, logSevError, logSevSevere, logSevLicense, logSevTryBuy = list(range(6))
+
+
+# noinspection PyPep8Naming
+class dsmLogExIn_t(Structure):
+    _fields_ = [
+        ('stVersion', dsUint16_t),
+        ('severity', dsmLogSeverity),
+        ('appMsgID', c_char * 8),
+        ('logType', dsmLogType),
+        ('message', c_char_p),
+        ('appName', c_char * DSM_MAX_PLATFORM_LENGTH),
+        ('osPlatform', c_char * DSM_MAX_PLATFORM_LENGTH),
+        ('appVersion', c_char * DSM_MAX_PLATFORM_LENGTH),
+    ]
+
+dsmLogExInVersion = 2
+
+
+# noinspection PyPep8Naming
+class dsmLogExOut_t(Union):
+    _fields_ = [
+        ('stVersion', dsUint16_t)
+    ]
+
+dsmLogExOutVersion = 1

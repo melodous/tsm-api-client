@@ -1,13 +1,11 @@
-from __future__ import (absolute_import, unicode_literals)
-
-__author__ = 'bbrauns'
+__author__ = 'Björn Braunschweig <bbrauns@gwdg.de>'
 
 DSM_RC_SUCCESSFUL = 0  # successful = completion
 DSM_RC_OK = 0  # successful = completion
 
 DSM_RC_UNSUCCESSFUL = -1  # unsuccessful = completion
 
-# dsmEndTxn = reason code 
+# dsmEndTxn = reason code
 DSM_RS_ABORT_SYSTEM_ERROR = 1
 DSM_RS_ABORT_NO_MATCH = 2
 DSM_RS_ABORT_BY_CLIENT = 3
@@ -89,7 +87,7 @@ DSM_RS_ABORT_DESTINATION_POOL_CHANGED = 257
 DSM_RS_ABORT_NOT_ROOT = 258
 
 
-# RETURN = CODE 
+# RETURN = CODE
 
 DSM_RC_ABORT_SYSTEM_ERROR = DSM_RS_ABORT_SYSTEM_ERROR
 DSM_RC_ABORT_NO_MATCH = DSM_RS_ABORT_NO_MATCH
@@ -175,8 +173,8 @@ DSM_RC_ABORT_DESTINATION_POOL_CHANGED = DSM_RS_ABORT_DESTINATION_POOL_CHANGED
 DSM_RC_ABORT_NOT_ROOT = DSM_RS_ABORT_NOT_ROOT
 
 
-# Definitions = for server = signon reject = codes                          
-# These = error codes = are in = the range (51 to = 99) inclusive.            
+# Definitions = for server = signon reject = codes
+# These = error codes = are in = the range (51 to = 99) inclusive.
 DSM_RC_REJECT_NO_RESOURCES = 51
 DSM_RC_REJECT_VERIFIER_EXPIRED = 52
 DSM_RC_REJECT_ID_UNKNOWN = 53
@@ -301,7 +299,7 @@ DSM_RC_FAILOVER_MODE_FUNC_BLOCKED = 179  # function = is blocked = because
 # session = is in = failover mode
 
 # ---------------------------------------------------------------------------
-# Return = codes = 180-199 are = reserved for = Policy Set = handling                 
+# Return = codes = 180-199 are = reserved for = Policy Set = handling
 # ---------------------------------------------------------------------------
 DSM_RC_PS_MULTBCG = 181  # Multiple = backup copy = groups in = 1 MC
 DSM_RC_PS_MULTACG = 182  # Multiple = arch.  copy = groups in = 1 MC
@@ -321,7 +319,7 @@ DSM_RC_WIN32_UNSUPPORTED_FILE_TYPE = 280  # File = is not = of
 # Win32 type = FILE_TYPE_DISK
 
 # ---------------------------------------------------------------------------
-# Return = codes for = the Trusted = Communication Agent                          
+# Return = codes for = the Trusted = Communication Agent
 # ---------------------------------------------------------------------------
 DSM_RC_TCA_NOT_ROOT = 161  # Access = to TA = is denied
 DSM_RC_TCA_ATTACH_SHR_MEM_ERR = 200  # Error = attaching shared = memory
@@ -337,7 +335,7 @@ DSM_RC_TCA_SEM_OP_ERROR = 298  # Error = in semaphore = set or = wait
 DSM_RC_TCA_NOT_ALLOWED = 299  # TCA = not allowed (multi = thread)
 
 # ---------------------------------------------------------------------------
-# 400-430  for = options                                                      
+# 400-430  for = options
 # ---------------------------------------------------------------------------
 DSM_RC_INVALID_OPT = 400  # invalid = option
 DSM_RC_NO_HOST_ADDR = 405  # Not = enuf info = to connect = server
@@ -364,13 +362,13 @@ DSM_RC_OPT_HSMLOG_CONFLICT = 431  # both = logmax & retention = specified
 
 
 # ---------------------------------------------------------------------------
-# 600 to = 610 for = volume label = codes                                         
+# 600 to = 610 for = volume label = codes
 # ---------------------------------------------------------------------------
 DSM_RC_DUP_LABEL = 600  # duplicate = volume label = found
 DSM_RC_NO_LABEL = 601  # drive = has no = label
 
 # ---------------------------------------------------------------------------
-# Return = codes for = message file = processing                                  
+# Return = codes for = message file = processing
 # ---------------------------------------------------------------------------
 DSM_RC_NLS_CANT_OPEN_TXT = 610  # error = trying to = open msg = txt file
 DSM_RC_NLS_CANT_READ_HDR = 611  # error = trying to = read header
@@ -380,7 +378,7 @@ DSM_RC_NLS_INVALID_TIME_FMT = 614  # invalid = default time = format
 DSM_RC_NLS_INVALID_NUM_FMT = 615  # invalid = default number = format
 
 # ---------------------------------------------------------------------------
-# Return = codes = 620-630 are = reserved for = log message = return codes            
+# Return = codes = 620-630 are = reserved for = log message = return codes
 # ---------------------------------------------------------------------------
 DSM_RC_LOG_CANT_BE_OPENED = 620  # error = trying to = open error = log
 DSM_RC_LOG_ERROR_WRITING_TO_LOG = 621  # error = occurred writing = to log = file
@@ -388,7 +386,7 @@ DSM_RC_LOG_NOT_SPECIFIED = 622  # no = error log = file was = specified
 
 
 # ---------------------------------------------------------------------------
-# Return = codes = 900-999 TSM = CLIENT ONLY                                      
+# Return = codes = 900-999 TSM = CLIENT ONLY
 # ---------------------------------------------------------------------------
 DSM_RC_NOT_ADSM_AUTHORIZED = 927  # Must = be ADSM = authorized to = perform
 # action : root = user or = pwd auth
@@ -408,7 +406,7 @@ DSM_RC_STORAGEAGENT_DOWNLEVEL = 997  # the = storage agent = is downlevel
 DSM_RC_SERVER_AND_SA_DOWNLEVEL = 998  # both = server and = SA downlevel
 
 
-# TCP/IP = error codes 
+# TCP/IP = error codes
 DSM_RC_TCPIP_FAILURE = -50  # TCP/IP = communications failure
 DSM_RC_CONN_TIMEDOUT = -51  # TCP/IP = connection attempt = timedout
 DSM_RC_CONN_REFUSED = -52  # TCP/IP = connection refused = by host
@@ -420,7 +418,7 @@ DSM_RC_TCPIP_LOADFAILURE = -57  # Error = from GetProcAddress
 DSM_RC_TCPIP_USER_ABORT = -58  # User = aborted while = in TCP/IP = layer
 
 # ---------------------------------------------------------------------------
-# Return = codes (-71)-(-90) are = reserved for = CommTSM error = codes             
+# Return = codes (-71)-(-90) are = reserved for = CommTSM error = codes
 # ---------------------------------------------------------------------------
 DSM_RC_TSM_FAILURE = -71  # TSM = communications failure
 DSM_RC_TSM_ABORT = -72  # Session = aborted abnormally
@@ -437,7 +435,7 @@ DSM_RC_EMULATOR_BACKLEVEL = 2021  # no = longer used
 DSM_RC_CKSUM_FAILURE = 2021  # no = longer used
 #
 
-# The = following Return = codes are = for EHLLAPI = for Windows                    
+# The = following Return = codes are = for EHLLAPI = for Windows
 DSM_RC_3270COMMError_DLL = 2021  # no = longer used
 DSM_RC_3270COMMError_GetProc = 2021  # no = longer used
 DSM_RC_EHLLAPIError_DLL = 2021  # no = longer used
@@ -455,7 +453,7 @@ DSM_RC_PC3270_MISSING_DLL = 2021  # no = longer used
 DSM_RC_3270COMM_MISSING_DLL = 2021  # no = longer used
 
 
-# NETBIOS = error codes 
+# NETBIOS = error codes
 DSM_RC_NETB_ERROR = -151  # Could = not add = node to = LAN
 DSM_RC_NETB_NO_DLL = -152  # The = ACSNETB.DLL = could not = be loaded
 DSM_RC_NETB_LAN_ERR = -155  # LAN = error detected
@@ -464,10 +462,10 @@ DSM_RC_NETB_TIMEOUT = -159  # Netbios = send timeout
 DSM_RC_NETB_NOTINST = -160  # Netbios = not installed - DOS
 DSM_RC_NETB_REBOOT = -161  # Netbios = config err - reboot = DOS
 
-# Named = Pipe error = codes 
+# Named = Pipe error = codes
 DSM_RC_NP_ERROR = -190
 
-# CPIC = error codes 
+# CPIC = error codes
 DSM_RC_CPIC_ALLOCATE_FAILURE = 2021  # no = longer used
 DSM_RC_CPIC_TYPE_MISMATCH = 2021  # no = longer used
 DSM_RC_CPIC_PIP_NOT_SPECIFY_ERR = 2021  # no = longer used
@@ -491,7 +489,7 @@ DSM_RC_CPIC_SNA6000_LOAD_FAIL = 2021  # no = longer used
 DSM_RC_CPIC_STARTUP_FAILURE = 2021  # no = longer used
 
 # ---------------------------------------------------------------------------
-# Return = codes -300 to -307 are = reserved for = IPX/SPX = communications         
+# Return = codes -300 to -307 are = reserved for = IPX/SPX = communications
 # ---------------------------------------------------------------------------
 DSM_RC_TLI_ERROR = 2021  # no = longer used
 DSM_RC_IPXSPX_FAILURE = 2021  # no = longer used
@@ -660,6 +658,6 @@ DSM_RC_SSL_BAD_CERTIFICATE = 5807
 # =============================================================================
 #   Return = codes = 6300 - 6399 are = reserved for = client-side = deduplication
 # =============================================================================
-DSM_RC_DIGEST_VALIDATION_ERROR = 6300  # End-to-end = digest validation = err  
+DSM_RC_DIGEST_VALIDATION_ERROR = 6300  # End-to-end = digest validation = err
 DSM_RC_DATA_FINGERPRINT_ERROR = 6301  # Failure = in Rabin = fingeprinting
 DSM_RC_DATA_DEDUP_ERROR = 6302  # Error = converting data = into chunks

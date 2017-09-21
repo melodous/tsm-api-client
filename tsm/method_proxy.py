@@ -1,12 +1,9 @@
-from __future__ import (absolute_import, unicode_literals)
-
 import ctypes
 import logging
 import os
+from tsm.definitions import *
 
-from tsm.tsm_definitions import *
-
-__author__ = 'bbrauns'
+__author__ = 'Björn Braunschweig <bbrauns@gwdg.de>'
 
 
 class TSMApiMethodProxy(object):
@@ -118,3 +115,7 @@ class TSMApiMethodProxy(object):
         self.dsmDeleteObj = lib_api_tsm_64.dsmDeleteObj
         self.dsmDeleteObj.argtypes = [dsUint32_t, ctypes.c_int, dsmDelInfo]
         self.dsmDeleteObj.restype = dsInt16_t
+
+        self.dsmLogEventEx = lib_api_tsm_64.dsmLogEventEx
+        self.dsmLogEventEx.argtypes = [dsUint32_t, POINTER(dsmLogExIn_t), POINTER(dsmLogExOut_t)]
+        self.dsmLogEventEx.restype = dsInt16_t

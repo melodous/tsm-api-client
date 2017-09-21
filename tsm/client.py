@@ -1,18 +1,24 @@
-from __future__ import (absolute_import, unicode_literals, division)
-
 import collections
 import ctypes
 import datetime
 import logging
 import os
+from operator import attrgetter
+from typing import List
 
-from tsm import tsm_helper
-from tsm.tsm_definitions import *
-from tsm.tsm_helper import convert_size_to_hi_lo, convert_hi_lo_to_size, convert_tsm_structure_to_str
-from tsm.tsm_method_proxy import TSMApiMethodProxy
-from tsm.tsm_rc_codes import *
+from tsm.rc_codes import *
+from tsm.definitions import *
+from tsm.util import log_execution_time, calculate_rate_human_readable
+from tsm.helper import convert_size_to_hi_lo, convert_hi_lo_to_size, convert_tsm_structure_to_str, \
+    str_to_bytes, translate_rc_to_mnemonic, bytes_to_str
+from tsm.method_proxy import TSMApiMethodProxy
 
-__author__ = 'bbrauns'
+__author__ = 'Björn Braunschweig <bbrauns@gwdg.de>'
+
+logger = logging.getLogger(__name__)
+
+query_result_tuple = collections.namedtuple('query_result_tuple', 'obj_id size_estimate ins_date fs hl ll')
+tsm_path_tuple = collections.namedtuple('tsm_path', 'fs hl ll')
 
 
 class TSMError(Exception):
@@ -31,7 +37,7 @@ class TSMApiClient(object):
     A TSMApiClient instance is capable to archive and retrieve arbitrary sized files
     in combination with a TSM Server.
 
-    More information:
+    More information regarding the TSM Api:
     http://publib.boulder.ibm.com/tividd/td/TSMC/GC32-0793-02/en_US/HTML/ansa000064.htm
     """
 
@@ -45,19 +51,30 @@ class TSMApiClient(object):
 
     def connect(self):
         if not self.dsm_handle:
-            logging.info('establishing connection to tsm server.')
+            logger.info('establishing connection to tsm server.')
             self._check_api_version()
             self.dsm_handle = self._init_session()
+            logger.info('using handle: {0}'.format(self.dsm_handle.value))
             info = self.query_session_info()
-            logging.info('session info:')
-            info_str = tsm_helper.convert_tsm_structure_to_str(info)
-            logging.info(info_str)
+            logger.info('session info:')
+            info_str = convert_tsm_structure_to_str(info)
+            logger.info(info_str)
         else:
-            logging.info('using session with handle: {0}'.format(self.dsm_handle))
+            logger.info('using session with handle: {0}'.format(self.dsm_handle.value))
+            try:
+                # check if session is still valid
+                self.query_session_info()
+            except TSMError as _err:
+                if _err.rc == DSM_RC_INVALID_DS_HANDLE:
+                    logger.info('DSM_RC_INVALID_DS_HANDLE occurred. refreshing handle...')
+                    self.dsm_handle = None
+                    self.connect()
+                else:
+                    raise
 
     def close(self):
         if self.dsm_handle:
-            logging.info('terminating handle')
+            logger.info('terminating handle')
             self.method_proxy.dsmTerminate(self.dsm_handle)
 
     def _raise_err(self, rc):
@@ -66,7 +83,8 @@ class TSMApiClient(object):
             self.method_proxy.dsmRCMsg(self.dsm_handle, rc, msg)
             raise TSMError(msg.value, rc)
         else:
-            raise TSMError('unknown error, rc={0}'.format(rc), rc)
+            mnemonic = translate_rc_to_mnemonic(rc)
+            raise TSMError('unknown error, rc={0}, mnemonic={1}'.format(rc, mnemonic), rc)
 
     def _raise_err_on_rc(self, rc):
         if rc != DSM_RC_OK:
@@ -74,11 +92,11 @@ class TSMApiClient(object):
 
     def log_dsm_rc_msg(self):
         def err_check(rc, func, funcargs):
-            logging.info('dsm func call: {0}, rc={1}'.format(func.__name__, rc))
+            logger.info('dsm func call: {0}, rc={1}'.format(func.__name__, rc))
             if self.dsm_handle is not None and rc != DSM_RC_OK:
                 msg = ctypes.create_string_buffer(128)
                 self.method_proxy.dsmRCMsg(self.dsm_handle, rc, msg)
-                logging.info('dsm API msg: {0}'.format(msg.value))
+                logger.info('dsm API msg: {0}'.format(msg.value))
             return rc
 
         return err_check
@@ -95,6 +113,7 @@ class TSMApiClient(object):
             filespace = '/' + filespace
         return filespace, highlevel, lowlevel
 
+    @log_execution_time
     def archive(self, filename, filespace, highlevel, lowlevel=None):
         """
         Archive a file to TSM.
@@ -109,10 +128,12 @@ class TSMApiClient(object):
         assert filespace
         assert highlevel
 
+        self.connect()
+
         fs, hl, ll = self._normalize_input(filename, filespace, highlevel, lowlevel)
         self._register_fs(fs, self.filespace_type, self.filespace_info)
         self._begin_tx()
-        logging.info('starting to archive filename={0} to filespace={1}, highlevel={2}, lowlevel={3}'.format(
+        logger.info('starting to archive filename={0} to filespace={1}, highlevel={2}, lowlevel={3}'.format(
             filename, fs, hl, ll))
         dsm_obj_name = self._bind_mc(fs, hl, ll)
         self._send_obj(dsm_obj_name, filename)
@@ -120,9 +141,27 @@ class TSMApiClient(object):
         self._end_send_obj()
         self._end_tx()
 
+    def query(self, filespace, highlevel, lowlevel) -> List[query_result_tuple]:
+        """
+        Queries objects sorted by newest date first. Returns empty list on
+        nothing found.
+        """
+        assert filespace
+        assert highlevel
+        assert lowlevel
+
+        self.connect()
+
+        fs, hl, ll = self._normalize_input(None, filespace, highlevel, lowlevel)
+        self._begin_query(fs, hl, ll)
+        found_objs = self._get_next_query_obj()
+        self._end_query()
+        return found_objs
+
+    @log_execution_time
     def retrieve(self, dest_file, filespace, highlevel, lowlevel=None):
         """
-        Retrieve an archived file.
+        Retrieves an archived file.
         :param dest_file: destination file
         :param filespace: TSM filespace
         :param highlevel: TSM highlevel name
@@ -134,23 +173,61 @@ class TSMApiClient(object):
         assert filespace
         assert highlevel
 
+        self.connect()
+
         fs, hl, ll = self._normalize_input(dest_file, filespace, highlevel, lowlevel)
-        self._begin_query(fs, hl, ll)
-        found_objs = self._get_next_query_obj()
-        if len(found_objs) == 1:
-            self._end_query()
-            self._begin_get_data(found_objs[0].obj_id)
-            data_blk, buff = self._get_obj(found_objs[0].obj_id)
-            self._get_data(dest_file, data_blk, buff, found_objs[0].size_estimate)
-            self._end_get_obj()
-            self._end_get_data()
-        elif len(found_objs) > 1:
-            raise TSMError('{0} objects found, but 1 was expected.'.format(len(found_objs)), rc=None)
-        else:
+        found_objs = self.query(fs, hl, ll)
+
+        count = len(found_objs)
+        if count == 0:
             raise TSMNotFoundError('object can not be found.'
                                    ' filespace:{0}, highlevel:{1}, lowlevel:{2}'.format(fs,
                                                                                         hl,
                                                                                         ll))
+        else:
+            # in case of migrations
+            if count > 1:
+                logging.info('found {} objects. using latest.'.format(count))
+            self._begin_get_data(found_objs[0].obj_id)
+            data_blk, buff, rc = self._get_obj(found_objs[0].obj_id)
+            self._get_data(dest_file, data_blk, buff, found_objs[0].size_estimate, rc)
+            self._end_get_obj()
+            self._end_get_data()
+
+    def retrieve_all(self, dest_folder, arr):
+        """
+        Retrieves multiple archived files. The files will be placed in
+        dest_folder/<fs>/<hl>/<ll>.
+        :param dest_folder: folder to save the retrieved files
+        :param arr: files to retrieve
+        :return:
+        """
+        assert dest_folder is not None
+        assert arr
+
+        self.connect()
+
+        # query objs
+        all_objs = []
+        for a in arr:
+            fs, hl, ll = self._normalize_input(None, a.fs, a.hl, a.ll)
+            found_objs = self.query(fs, hl, ll)
+            if not found_objs:
+                raise TSMNotFoundError('object can not be found.'
+                                       ' filespace:{0}, highlevel:{1}, lowlevel:{2}'.format(fs, hl, ll))
+            all_objs = all_objs + found_objs  # concat lists
+        # retrieve objs
+        self._begin_get_data(list([x.obj_id for x in all_objs]))
+        for o in all_objs:
+            data_blk, buff, rc = self._get_obj(o.obj_id)
+            dest_folder = dest_folder + o.fs + o.hl
+            if not os.path.exists(dest_folder):
+                os.makedirs(dest_folder)
+            dest_filename = dest_folder + o.ll
+            logger.info('saving file to: {}'.format(dest_filename))
+            self._get_data(dest_filename, data_blk, buff, o.size_estimate, rc)
+            self._end_get_obj()
+        self._end_get_data()
 
     def delete(self, filespace, highlevel, lowlevel=None):
         """
@@ -161,35 +238,79 @@ class TSMApiClient(object):
         all objects under highlevel name are deleted.
         :return:
         """
-        assert filespace
-        assert highlevel
+        assert filespace is not None
+        assert highlevel is not None
+
+        self.connect()
 
         if lowlevel is None:
             lowlevel = '/*'
+            logger.info('lowlevel not specified, setting lowlevel to: /*')
         fs, hl, ll = self._normalize_input(None, filespace, highlevel, lowlevel)
-        self._begin_query(fs, hl, ll)
-        found_objs = self._get_next_query_obj()
-        self._end_query()
+        found_objs = self.query(fs, hl, ll)
         if not found_objs:
             raise TSMNotFoundError('object can not be found.'
                                    ' filespace:{0}, highlevel:{1}, lowlevel:{2}'.format(fs,
                                                                                         hl,
                                                                                         ll))
         assert len(found_objs) < 5, 'sanity check for _delete_obj failed.'
-        logging.info('found {0} objects.'.format(len(found_objs)))
+        logger.info('found {0} objects.'.format(len(found_objs)))
         self._begin_tx()
         for obj in found_objs:
             self._delete_obj(obj.obj_id)
         self._end_tx()
 
+    def log(self, msg: str, app_msg_id: str = '', app_name: str = '',
+            severity: int = dsmLogSeverityEnum.logSevInfo,
+            log_type: int = dsmLogTypeEnum.logServer):
+        """
+        The dsmLogEventEx function call logs a user message to the server log file, to the local error log,
+        or to both. This call must be performed while at InSession state inside a session.
+        Do not perform it within a send, get, or query. See Figure 20.
+        The severity determines the Tivoli Storage Manager message number.
+        To view messages that are logged on the server, use the query actlog command through the Administrative Client.
+        Use the Tivoli Storage Manager client option, errorlogretention,
+        to prune the client error log file if the application generates numerous client messages written to the client
+        log (dsmLogType either logLocal or logBoth). Refer to the Tivoli Storage Manager Administrator's Reference for
+        more information.
+        :param msg: This parameter is the text of the event message to log. This must be a null-ended string.
+        The maximum length is DSM_MAX_RC_MSG_LENGTH
+        :param app_msg_id: This parameter is a string to identify the specific application message.
+        The format we recommend is three characters that are followed by four numbers. For example DSM0250
+        :param app_name:
+        :param severity: This parameter is the event severity. The possible values are:
+            logSevInfo,       /* information ANE4990 */
+            logSevWarning,    /* warning     ANE4991 */
+            logSevError,      /* Error       ANE4992 */
+            logSevSevere      /* severe      ANE4993 */
+        :param log_type: This parameter specifies where to direct the event.
+            The possible values include: logServer, logLocal, or logBoth.
+        :return:
+        """
+        assert msg is not None
+
+        self.connect()
+
+        dsm_log_ex_in = dsmLogExIn_t()
+        dsm_log_ex_in.stVersion = dsmLogExInVersion
+        dsm_log_ex_in.severity = severity
+        dsm_log_ex_in.appMsgID = str_to_bytes(app_msg_id)
+        dsm_log_ex_in.logType = log_type
+        dsm_log_ex_in.appName = str_to_bytes(app_name)
+        dsm_log_ex_in.message = str_to_bytes(msg)
+
+        dsm_log_ex_out = dsmLogExOut_t()
+        rc = self.method_proxy.dsmLogEventEx(self.dsm_handle, ctypes.byref(dsm_log_ex_in), ctypes.byref(dsm_log_ex_out))
+        self._raise_err_on_rc(rc)
+
     def _delete_obj(self, obj_id):
-        assert obj_id
+        assert obj_id is not None
 
         del_info = dsmDelInfo()
         del_info.archInfo.stVersion = delArchVersion
         del_info.archInfo.objId = obj_id
 
-        logging.info('deleting: objId.lo={0}, objId.hi={1}'.format(obj_id.lo, obj_id.hi))
+        logger.info('deleting: objId.lo={0}, objId.hi={1}'.format(obj_id.lo, obj_id.hi))
 
         self.method_proxy.dsmDeleteObj.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmDeleteObj(self.dsm_handle, dsmDelTypeEnum.dtArchive, del_info)
@@ -201,7 +322,7 @@ class TSMApiClient(object):
         """
         apiversionex = dsmApiVersionEx()
         self.method_proxy.dsmQueryApiVersionEx(ctypes.byref(apiversionex))
-        logging.info('API Version: {version}.{release}.{level}.{subLevel}'.format(
+        logger.info('API Version: {version}.{release}.{level}.{subLevel}'.format(
             version=apiversionex.version, release=apiversionex.release,
             level=apiversionex.level, subLevel=apiversionex.subLevel))
         applversion = (10000 * DSM_API_VERSION) + \
@@ -226,6 +347,7 @@ class TSMApiClient(object):
             msg += 'Please upgrade the API accordingly.'
             raise TSMError(msg, rc=None)
 
+    @log_execution_time
     def _init_session(self):
         """
         Starts an API session using the additional parameters that permit extended verification.
@@ -251,11 +373,11 @@ class TSMApiClient(object):
         # initIn.clientNodeNameP     = ''
         # initIn.clientOwnerNameP    = ''
         # initIn.clientPasswordP     = ''
-        init_in.applicationTypeP = self.filespace_type
+        init_in.applicationTypeP = str_to_bytes(self.filespace_type)
         # init_in.configfile = ''
         # initIn.options             = ''
 
-        # initIn.userNameP           = 'KOPAL-TEST'
+        # initIn.userNameP           = ''
         # initIn.userPasswordP       = ''
         # initIn.dirDelimiter        = '\0'
         # initIn.useUnicode          = dsmFalse
@@ -270,14 +392,15 @@ class TSMApiClient(object):
         self.method_proxy.dsmInitEx.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmInitEx(ctypes.byref(local_handle), ctypes.byref(init_in), ctypes.byref(initout))
         self._raise_err_on_rc(rc)
-        logging.info('dsmInitEx')
-        logging.info(
+        logger.info('dsmInitEx')
+        logger.info(
             'Connected to server: {server}, ver/rel/lev {ver}/{rel}/{lev}'.format(server=initout.adsmServerName,
                                                                                   ver=initout.serverVer,
                                                                                   rel=initout.serverRel,
                                                                                   lev=initout.serverLev))
         return local_handle
 
+    @log_execution_time
     def query_session_info(self):
         """
         The dsmQuerySessInfo function call starts a query request to Tivoli Storage Manager for information
@@ -293,6 +416,7 @@ class TSMApiClient(object):
         self._raise_err_on_rc(rc)
         return dsm_sess_info
 
+    @log_execution_time
     def _register_fs(self, fs_name, fs_type, fs_info):
         """
         The dsmRegisterFS function call registers a new file space with the Tivoli Storage Manager server.
@@ -301,23 +425,24 @@ class TSMApiClient(object):
         :param fs_type: Filespace type: eg. UNIX
         :param fs_info: Descriptive info data
         """
-        assert fs_name
-        assert fs_type
-        assert fs_info
+        assert fs_name is not None
+        assert fs_type is not None
+        assert fs_info is not None
         dsm_reg_fs_data = regFSData()
         dsm_reg_fs_data.stVersion = regFSDataVersion
-        dsm_reg_fs_data.fsName = fs_name  # '/api1'
-        dsm_reg_fs_data.fsType = fs_type  # 'smp'
-        dsm_reg_fs_data.fsAttr.unixFSAttr.fsInfo = fs_info  # '123'
+        dsm_reg_fs_data.fsName = str_to_bytes(fs_name)
+        dsm_reg_fs_data.fsType = str_to_bytes(fs_type)
+        dsm_reg_fs_data.fsAttr.unixFSAttr.fsInfo = str_to_bytes(fs_info)
         dsm_reg_fs_data.fsAttr.unixFSAttr.fsInfoLength = len(dsm_reg_fs_data.fsAttr.unixFSAttr.fsInfo)
 
         self.method_proxy.dsmRegisterFS.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmRegisterFS(self.dsm_handle, dsm_reg_fs_data)
         if rc == DSM_RC_FS_ALREADY_REGED:
-            logging.info('filespace: {0} is already registered'.format(fs_name))
+            logger.info('filespace: {0} is already registered'.format(fs_name))
         else:
             self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _begin_tx(self):
         """
         The dsmBeginTxn function call begins one or more Tivoli Storage Manager transactions
@@ -331,6 +456,7 @@ class TSMApiClient(object):
         rc = self.method_proxy.dsmBeginTxn(self.dsm_handle)
         self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _bind_mc(self, filespace, highlevel, lowlevel):
         """
         The dsmBindMC function call associates, or binds, a management class to the passed object.
@@ -342,14 +468,14 @@ class TSMApiClient(object):
         :param highlevel: The highlevel name associated for this object
         :param lowlevel: The lowlevel name associated for this object
         """
-        assert filespace
-        assert highlevel
-        assert lowlevel
+        assert filespace is not None
+        assert highlevel is not None
+        assert lowlevel is not None
 
         dsm_obj_name = dsmObjName()
-        dsm_obj_name.fs = filespace
-        dsm_obj_name.hl = highlevel
-        dsm_obj_name.ll = lowlevel
+        dsm_obj_name.fs = str_to_bytes(filespace)
+        dsm_obj_name.hl = str_to_bytes(highlevel)
+        dsm_obj_name.ll = str_to_bytes(lowlevel)
         dsm_obj_name.objType = DSM_OBJ_FILE
         mc_bind_key = mcBindKey()
         mc_bind_key.stVersion = mcBindKeyVersion
@@ -360,6 +486,7 @@ class TSMApiClient(object):
         self._raise_err_on_rc(rc)
         return dsm_obj_name
 
+    @log_execution_time
     def _send_obj(self, dsm_obj_name, filename):
         """
         The dsmSendObj function call starts a request to send a single object to storage. +Multiple dsmSendObj calls
@@ -368,7 +495,7 @@ class TSMApiClient(object):
         :param dsm_obj_name: Object returned from bind_mc function
         :param filename: The file to be sent
         """
-        assert dsm_obj_name
+        assert dsm_obj_name is not None
         assert os.path.exists(filename)
 
         obj_attr = ObjAttr()
@@ -379,12 +506,12 @@ class TSMApiClient(object):
             raise TSMError('size of: {0} is 0 bytes.'.format(filename), rc=None)
 
         hi, lo = convert_size_to_hi_lo(size)
-        logging.info('obj size={0} => hi={1}, low={2}'.format(size, hi, lo))
+        logger.info('obj size={0} => hi={1}, low={2}'.format(size, hi, lo))
         obj_attr.sizeEstimate.hi = hi
         obj_attr.sizeEstimate.lo = lo
         obj_attr.objCompressed = dsmFalse
         obj_attr.objInfoLength = 17  # todo
-        obj_attr.objInfo = 'test-api-objinfo'
+        obj_attr.objInfo = str_to_bytes('test-api-objinfo')
 
         snd_arch_data = sndArchiveData()
         snd_arch_data.stVersion = sndArchiveDataVersion
@@ -405,6 +532,7 @@ class TSMApiClient(object):
         else:
             self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _send_data(self, filename):
         """
         The dsmSendData function call sends a byte stream of data to Tivoli Storage Manager through a buffer.
@@ -412,17 +540,17 @@ class TSMApiClient(object):
         Usually, this data is file data, but it is not limited to such.
         You can call dsmSendData several times, if the byte stream of data that you want to send is large.
         :param filename: Path to file being sent.
-        
+
         """
-        assert filename
+        assert filename is not None
         assert os.path.exists(filename)
 
-        logging.info('using send_buffer_len={0} bytes'.format(self.send_buffer_len))
+        logger.info('using send_buffer_len={0} bytes'.format(self.send_buffer_len))
 
         size = os.path.getsize(filename)
         if size == 0:
             raise TSMError('size of: {0} is 0 bytes.'.format(filename), rc=None)
-        logging.info('size of file={0} is: {1} bytes'.format(filename, size))
+        logger.info('size of file={0} is: {1} bytes'.format(filename, size))
         bytes_left = size
         start = datetime.datetime.now()
 
@@ -442,8 +570,8 @@ class TSMApiClient(object):
 
                 data_blk.bufferLen = send_amount
                 data_blk.numBytes = 0  # changed, when send is done
-                data = f.read(send_amount)  # str
-                logging.info('read {0} bytes from file'.format(send_amount))
+                data = f.read(send_amount)
+                logger.info('read {0} bytes from file'.format(send_amount))
                 buff.raw = data
                 rc = self.method_proxy.dsmSendData(self.dsm_handle, ctypes.byref(data_blk))
                 if rc == DSM_RC_WILL_ABORT:
@@ -452,7 +580,7 @@ class TSMApiClient(object):
                 else:
                     self._raise_err_on_rc(rc)
 
-                logging.info('{0} bytes of {1} bytes remaining, {2}%...'.format(
+                logger.info('{0} bytes of {1} bytes remaining, {2}%...'.format(
                     bytes_left, size, round((100.0 / float(size)) * (size - bytes_left), 2)))
 
                 if send_amount < self.send_buffer_len:  # todo: raussprung muss geprueft werden
@@ -460,8 +588,11 @@ class TSMApiClient(object):
                 bytes_left = bytes_left - send_amount
         end = datetime.datetime.now()
         elapsed = end - start
-        logging.info('sending took: {0} s'.format(elapsed.total_seconds()))
+        logger.info('sending finished, rate: {0}/s'.format(
+            calculate_rate_human_readable(size, elapsed.total_seconds())))
+        logger.info('sending took: {0} s'.format(elapsed.total_seconds()))
 
+    @log_execution_time
     def _end_send_obj(self):
         """
         The dsmEndSendObj function call indicates the end of data that is sent to storage.
@@ -483,6 +614,7 @@ class TSMApiClient(object):
         return convert_hi_lo_to_size(hi=end_send_obj_ex_out.totalBytesSent.hi,
                                      lo=end_send_obj_ex_out.totalBytesSent.lo)
 
+    @log_execution_time
     def _end_tx(self, vote=DSM_VOTE_COMMIT):
         """
         The dsmEndTxn function call ends a Tivoli Storage Manager transaction.
@@ -503,8 +635,11 @@ class TSMApiClient(object):
 
         self.method_proxy.dsmEndTxn.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmEndTxn(self.dsm_handle, vote, txn_reason_p)
+        if txn_reason.value != 0:
+            logger.warning('txn reason: {0}'.format(translate_rc_to_mnemonic(txn_reason.value)))
         self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _begin_query(self, filespace, highlevel, lowlevel):
         """
         The dsmBeginQuery function call starts a query request to the server for information
@@ -519,14 +654,14 @@ class TSMApiClient(object):
         :param highlevel: The highlevel name associated for this object
         :param lowlevel: The lowlevel name associated for this object
         """
-        assert filespace
-        assert highlevel
-        assert lowlevel
+        assert filespace is not None
+        assert highlevel is not None
+        assert lowlevel is not None
 
         obj_name = dsmObjName()
-        obj_name.fs = filespace
-        obj_name.hl = highlevel
-        obj_name.ll = lowlevel
+        obj_name.fs = str_to_bytes(filespace)
+        obj_name.hl = str_to_bytes(highlevel)
+        obj_name.ll = str_to_bytes(lowlevel)
         obj_name.objType = DSM_OBJ_FILE
 
         archive_data = qryArchiveData()
@@ -538,14 +673,14 @@ class TSMApiClient(object):
         archive_data.expDateUpperBound.year = DATE_PLUS_INFINITE
         archive_data_p = ctypes.pointer(archive_data)
 
-        logging.info('querying for DSM_OBJ_FILE, DATE_MINUS_INFINITE - DATE_PLUS_INFINITE: fs={0}, hl={1}, '
-                     'll={2}...'.format(filespace,
-                                        highlevel, lowlevel))
+        logger.info('querying for DSM_OBJ_FILE, DATE_MINUS_INFINITE - DATE_PLUS_INFINITE: fs={0}, hl={1}, '
+                    'll={2}...'.format(filespace, highlevel, lowlevel))
 
         self.method_proxy.dsmBeginQuery.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmBeginQuery(self.dsm_handle, dsmQueryTypeEnum.qtArchive, archive_data_p)
         self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _get_next_query_obj(self):
         """
         The dsmGetNextQObj function call gets the next query response from a previous dsmBeginQuery
@@ -556,7 +691,6 @@ class TSMApiClient(object):
         you can send a dsmEndQuery call.
         :return: Returns namedtuple of type (obj_id, size_estimate)
         """
-        query_result_tuple = collections.namedtuple('query_result_tuple', 'obj_id size_estimate')
 
         resp_archive = qryRespArchiveData()
         resp_archive.stVersion = qryRespArchiveDataVersion
@@ -574,22 +708,29 @@ class TSMApiClient(object):
 
         self.method_proxy.dsmGetNextQObj.errcheck = self.log_dsm_rc_msg()
 
-        logging.info('begin query')
+        logger.info('begin query')
         while not done:
             rc = self.method_proxy.dsmGetNextQObj(self.dsm_handle, ctypes.byref(data_blk))
             if rc == DSM_RC_ABORT_NO_MATCH:
-                return None
+                return []
             if rc != DSM_RC_MORE_DATA and rc != DSM_RC_FINISHED:
                 self._raise_err_on_rc(rc)
             if (rc == DSM_RC_MORE_DATA or rc == DSM_RC_FINISHED) and data_blk.numBytes:
-                logging.info('# found object:')
-                logging.info('objId.lo: ' + str(resp_archive.objId.lo))
-                logging.info('objId.hi: ' + str(resp_archive.objId.hi))
-                logging.info('objName fs/hl/ll: ' + resp_archive.objName.fs + resp_archive.objName.hl +
-                             resp_archive.objName.ll)
-                logging.info('mediaClass: ' + str(resp_archive.mediaClass))
-                logging.info('sizeEstimate.lo: ' + str(resp_archive.sizeEstimate.lo))
-                logging.info('sizeEstimate.hi: ' + str(resp_archive.sizeEstimate.hi))
+                logger.info('# found object:')
+                logger.info('objId.lo: {0}'.format(resp_archive.objId.lo))
+                logger.info('objId.hi: {0}'.format(resp_archive.objId.hi))
+                logger.info('objName fs/hl/ll: {0}{1}{2}'.format(bytes_to_str(resp_archive.objName.fs),
+                                                                 bytes_to_str(resp_archive.objName.hl),
+                                                                 bytes_to_str(resp_archive.objName.ll)))
+                logger.info('mediaClass: {0}'.format(resp_archive.mediaClass))
+                logger.info('sizeEstimate.lo: {0}'.format(resp_archive.sizeEstimate.lo))
+                logger.info('sizeEstimate.hi: {0}'.format(resp_archive.sizeEstimate.hi))
+                logger.info('insDate.year: {0}'.format(resp_archive.insDate.year))
+                logger.info('insDate.month: {0}'.format(resp_archive.insDate.month))
+                logger.info('insDate.day: {0}'.format(resp_archive.insDate.day))
+                logger.info('insDate.hour: {0}'.format(resp_archive.insDate.hour))
+                logger.info('insDate.minute: {0}'.format(resp_archive.insDate.minute))
+                logger.info('insDate.second: {0}'.format(resp_archive.insDate.second))
 
                 obj_id = dsStruct64_t()
                 obj_id.hi = resp_archive.objId.hi
@@ -599,42 +740,85 @@ class TSMApiClient(object):
                 size_estimate.hi = resp_archive.sizeEstimate.hi
                 size_estimate.lo = resp_archive.sizeEstimate.lo
 
-                result = query_result_tuple(obj_id=obj_id, size_estimate=size_estimate)
+                ins_date = dsmDate()
+                ins_date.year = resp_archive.insDate.year
+                ins_date.month = resp_archive.insDate.month
+                ins_date.day = resp_archive.insDate.day
+                ins_date.hour = resp_archive.insDate.hour
+                ins_date.minute = resp_archive.insDate.minute
+                ins_date.second = resp_archive.insDate.second
+
+                # beware overwritten memory sections while looping over the data,
+                # therefore use the newly constructed values
+                fs = resp_archive.objName.fs.decode('utf-8')
+                hl = resp_archive.objName.hl.decode('utf-8')
+                ll = resp_archive.objName.ll.decode('utf-8')
+                result = query_result_tuple(obj_id=obj_id, size_estimate=size_estimate, ins_date=ins_date,
+                                            fs=fs, hl=hl, ll=ll)
                 found_objs.append(result)
             if rc == DSM_RC_FINISHED:
-                logging.info('end query')
+                logger.info('end query')
                 done = True
         assert len(found_objs) < 10  # sanity check
+        return sorted(found_objs, reverse=True, key=attrgetter('ins_date.year',
+                                                               'ins_date.month',
+                                                               'ins_date.day',
+                                                               'ins_date.hour',
+                                                               'ins_date.minute',
+                                                               'ins_date.second'))
 
-        return found_objs
-
+    @log_execution_time
     def _end_query(self):
         self.method_proxy.dsmEndQuery.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmEndQuery(self.dsm_handle)
         self._raise_err_on_rc(rc)
 
-    def _begin_get_data(self, obj_id):
+    @log_execution_time
+    def _begin_get_data(self, obj_ids):
         """
         The dsmBeginGetData function call starts a restore or retrieve operation on a list of objects in storage.
         This list of objects is contained in the dsmGetList structure.
         The application creates this list with values from the query that preceded a call to dsmBeginGetData.
-        :param obj_id:
+        :param obj_ids:
         :return:
         """
-        assert obj_id
+        assert obj_ids is not None
+
+        # if its not an array make it so
+        try:
+            iter(obj_ids)
+        except TypeError:
+            obj_ids = [obj_ids]
+
+        # obj_id structures must be present with values
+        for obj_id in obj_ids:
+            if obj_id.lo != 0:
+                continue
+            else:
+                assert obj_id.hi != 0
+
+        # get_list.objId needs a point to an array,
+        # therefore populate the array with values
+        # noinspection PyCallingNonCallable
+        ds_struct_arr = (dsStruct64_t * len(obj_ids))()  # create array
+        for i, obj_id in enumerate(obj_ids):
+            ds_struct_arr[i].hi = obj_id.hi
+            ds_struct_arr[i].lo = obj_id.lo
+        ds_struct_arr_p = ctypes.cast(ds_struct_arr, ctypes.POINTER(dsStruct64_t))  # create pointer
 
         mount_wait = 1  # wait for mounting device
 
         get_list = dsmGetList()
         get_list.stVersion = dsmGetListVersion
-        get_list.numObjId = dsUint32_t(1)  # number of items
-        get_list.objId = ctypes.pointer(obj_id)  # (ObjID *)rest_ibuff;
+        get_list.numObjId = dsUint32_t(len(obj_ids))  # number of items
+        get_list.objId = ds_struct_arr_p  # (ObjID *)rest_ibuff;
 
         self.method_proxy.dsmBeginGetData.errcheck = self.log_dsm_rc_msg()
         rc = self.method_proxy.dsmBeginGetData(self.dsm_handle, mount_wait, dsmGetTypeEnum.gtArchive,
                                                ctypes.byref(get_list))
         self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _get_obj(self, obj_id):
         """
         The dsmGetObj function call obtains the requested object data from the Tivoli Storage Manager
@@ -643,11 +827,11 @@ class TSMApiClient(object):
         :param obj_id:
         :return:
         """
-        assert obj_id
+        assert obj_id is not None
 
         data_blk = DataBlk()
         data_blk.stVersion = DataBlkVersion
-        logging.info('using receive_buffer_len={0} bytes'.format(self.receive_buffer_len))
+        logger.info('using receive_buffer_len={0} bytes'.format(self.receive_buffer_len))
         data_blk.bufferLen = self.receive_buffer_len
         data_blk.numBytes = 0
 
@@ -655,13 +839,14 @@ class TSMApiClient(object):
         data_blk.bufferPtr = ctypes.cast(buff, ctypes.POINTER(ctypes.c_char))
 
         self.method_proxy.dsmGetObj.errcheck = self.log_dsm_rc_msg()
-        logging.info('requesting object data. this could take a while...')
+        logger.info('requesting object data. this may take a while...')
         rc = self.method_proxy.dsmGetObj(self.dsm_handle, ctypes.pointer(obj_id), ctypes.byref(data_blk))
         if rc != DSM_RC_MORE_DATA and rc != DSM_RC_FINISHED:
             self._raise_err_on_rc(rc)
-        return data_blk, buff
+        return data_blk, buff, rc
 
-    def _get_data(self, dest_file, data_blk, buff, size_estimate):
+    @log_execution_time
+    def _get_data(self, dest_file, data_blk, buff, size_estimate, rc):
         """
         The dsmGetData function call obtains a byte stream of data from Tivoli Storage Manager
         and place it in the caller's buffer. The application client calls dsmGetData when there
@@ -672,15 +857,15 @@ class TSMApiClient(object):
         :param size_estimate: estimated size
         :return:
         """
-        assert dest_file
-        assert data_blk
-        assert buff
+        assert dest_file is not None
+        assert data_blk is not None
+        assert buff is not None
+        assert rc is not None
 
         size_estimate64 = convert_hi_lo_to_size(size_estimate.hi, size_estimate.lo)
         sum_bytes = 0
-        logging.info('saving data from server to file: {0}'.format(dest_file))
+        logger.info('saving data from server to file: {0}'.format(dest_file))
         done = False
-        rc = DSM_RC_MORE_DATA  # rc from dsmGetObj
         self.method_proxy.dsmGetData.errcheck = self.log_dsm_rc_msg()
         start = datetime.datetime.now()
         with open(dest_file, 'wb') as f:
@@ -689,26 +874,29 @@ class TSMApiClient(object):
                     self._raise_err_on_rc(rc)
                 if rc == DSM_RC_MORE_DATA:
                     f.write(buff.raw[:data_blk.numBytes])
-                    logging.debug('DSM_RC_MORE_DATA wrote {0} bytes to file'.format(data_blk.numBytes))
+                    logger.debug('DSM_RC_MORE_DATA wrote {0} bytes to file'.format(data_blk.numBytes))
                     sum_bytes += data_blk.numBytes
 
                     # gets new data and sets data_blk.numBytes
                     rc = self.method_proxy.dsmGetData(self.dsm_handle, ctypes.byref(data_blk))
 
-                    logging.info('{0} bytes of {1} bytes received, {2}%...'.format(
+                    logger.info('{0} bytes of {1} bytes received, {2}%...'.format(
                         sum_bytes, size_estimate64, round((float(sum_bytes) / float(size_estimate64)) * 100, 2)))
                 if rc == DSM_RC_FINISHED:
                     if data_blk.numBytes:
                         f.write(buff.raw[:data_blk.numBytes])
-                        logging.debug('DSM_RC_FINISHED wrote {0} bytes to file'.format(data_blk.numBytes))
+                        logger.debug('DSM_RC_FINISHED wrote {0} bytes to file'.format(data_blk.numBytes))
                         sum_bytes += data_blk.numBytes
-                    logging.info('loop done')
+                    logger.info('loop done')
                     done = True
         end = datetime.datetime.now()
         elapsed = end - start
-        logging.info('-- wrote {0} bytes'.format(sum_bytes))
-        logging.info('receiving took: {0} s'.format(elapsed.total_seconds()))
+        logger.info('-- wrote {0} bytes'.format(sum_bytes))
+        logger.info('receiving finished, rate: {0}/s'.format(calculate_rate_human_readable(size_estimate64,
+                                                                                           elapsed.total_seconds())))
+        logger.info('receiving took: {0} s'.format(elapsed.total_seconds()))
 
+    @log_execution_time
     def _end_get_obj(self):
         """
         The dsmEndGetObj function call ends a dsmGetObj session that obtains data for a specified object.
@@ -718,6 +906,7 @@ class TSMApiClient(object):
         rc = self.method_proxy.dsmEndGetObj(self.dsm_handle)
         self._raise_err_on_rc(rc)
 
+    @log_execution_time
     def _end_get_data(self):
         """
         The dsmEndGetData function call ends a dsmBeginGetData session that obtains objects from storage.
@@ -732,14 +921,14 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='archive or delete via the tsm api.')
-    parser.add_argument('mode', help='archive or retrieve')
-    parser.add_argument('file', help='path to src or dest file')
-    parser.add_argument('fs', help='filespace')
-    parser.add_argument('hl', help='highlevel')
-    parser.add_argument('ll', help='lowlevel')
+    parser.add_argument('mode', help='a(rchive)/r(etrive)/d(elete)/q(uery)/l(og)')
+    parser.add_argument('--file', dest='file', help='path to src or dest file')
+    parser.add_argument('--fs', dest='fs', help='filespace')
+    parser.add_argument('--hl', dest='hl', help='highlevel')
+    parser.add_argument('--ll', dest='ll', help='lowlevel')
+    parser.add_argument('--msg', dest='msg', help='message')
     args = parser.parse_args()
 
-    logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
@@ -747,27 +936,38 @@ if __name__ == '__main__':
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    tsm_api_client = TSMApiClient()
+    client = TSMApiClient()
     try:
-
-        tsm_api_client.connect()
-        session_info = tsm_api_client.query_session_info()
-        logging.info('session info:')
+        client.connect()
+        session_info = client.query_session_info()
+        logger.info('session info:')
         session_info_str = convert_tsm_structure_to_str(session_info)
-        logging.info(session_info_str)
-        if args.mode == 'a' or args.mode == 'archive':
-            tsm_api_client.archive(filename=args.file,
-                                   filespace=args.fs,
-                                   highlevel=args.hl,
-                                   lowlevel=args.ll)
-        if args.mode == 'r' or args.mode == 'retrieve':
-            tsm_api_client.retrieve(dest_file=args.file,
-                                    filespace=args.fs,
-                                    highlevel=args.hl,
-                                    lowlevel=args.ll)
+        logger.info(session_info_str)
+        if args.mode == 'a':
+            client.archive(filename=args.file,
+                           filespace=args.fs,
+                           highlevel=args.hl,
+                           lowlevel=args.ll)
+        if args.mode == 'r':
+            client.retrieve(dest_file=args.file,
+                            filespace=args.fs,
+                            highlevel=args.hl,
+                            lowlevel=args.ll)
+        if args.mode == 'd':
+            client.delete(args.fs, args.hl, args.ll)
+        if args.mode == 'q':
+            print(client.query(args.fs, args.hl, args.ll))
+        if args.mode == 'h':
+            client.connect()
+            client.close()
+        if args.mode == 'ra':
+            folder = '/tmp/'
+            a1 = tsm_path_tuple(fs='kopal', hl='782eff9f-4aca-4fd3-a7af-fa6656842cd0', ll='mets.xml')
+            a2 = tsm_path_tuple(fs='kopal', hl='782eff9f-4aca-4fd3-a7af-fa6656842cd0', ll='aip.zip')
+            client.retrieve_all(folder, [a1, a2])
+        if args.mode == 'l':
+            client.log(args.msg)
     except Exception as err:
-        tsm_api_client.close()
-        logging.exception(err.message)
-        logging.error(err.message)
-    finally:
-        tsm_api_client.close()
+        client.close()
+        logger.exception(err)
+        logger.error(err)

@@ -1,0 +1,17 @@
+SErvername  tsm
+  COMMmethod            TCPip
+  TCPPort               2231
+TCPServeraddress        tsm.mycorp.com
+NODENAME                MYNODE
+PASSWORD                MYPW
+SCHEDLOGNAME            /var/log/tsm/dsmsched.log
+ERRORLOGNAME            /var/log/tsm/dsmsched.log
+SCHEDLOGRETENTION       10 D
+ERRORLOGRETENTION       10 D
+SCHEDMODE               POLLING
+QUERYSCHEDPERIOD        3
+RESOURCEUTILIZATION     2
+MANAGEDSERVICES         SCHEDULE
+COMPRESSION             No
+TCPNOdelay 		YES
+USELARGEBUFFERS YES

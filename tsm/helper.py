@@ -1,8 +1,33 @@
-from __future__ import (absolute_import, unicode_literals)
+import tsm.rc_codes as tsm_rc_codes
+from tsm.definitions import *
 
-from tsm.tsm_definitions import *
+__author__ = 'Björn Braunschweig <bbrauns@gwdg.de>'
 
-__author__ = 'bbrauns'
+
+def translate_rc_to_mnemonic(rc):
+    if isinstance(rc, c_short):
+        rc = rc.value
+    if isinstance(rc, c_int):
+        rc = rc.value
+    if isinstance(rc, c_ushort):
+        rc = rc.value
+    if rc is None:
+        return 'unknown'
+    module_vars = dir(tsm_rc_codes)
+    dsm_vars = filter(lambda x: x.startswith('DSM'), module_vars)
+    for dsm_var in dsm_vars:
+        k = getattr(tsm_rc_codes, dsm_var)
+        if k == rc:
+            return dsm_var
+    return 'unknown'
+
+
+def str_to_bytes(val):
+    return val.encode('ascii')
+
+
+def bytes_to_str(val):
+    return val.decode('ascii')
 
 
 def convert_size_to_hi_lo(size):
@@ -30,7 +55,7 @@ def media_class_to_str(media_class):
 
 
 # noinspection PyProtectedMember,PyTypeChecker
-def convert_tsm_structure_to_str(struct):
+def convert_tsm_structure_to_str(struct, depth=0):
     repr_str = ''
     for field_definition in struct._fields_:
         value = getattr(struct, field_definition[0])
@@ -38,8 +63,8 @@ def convert_tsm_structure_to_str(struct):
             value = str(convert_hi_lo_to_size(hi=value.hi,
                                               lo=value.lo))
         elif isinstance(value, Structure):
-            value = '\'' + convert_tsm_structure_to_str(value) + '\''  # recursive
+            value = '{\n' + convert_tsm_structure_to_str(value, depth + 1) + '}'  # recursive
         else:
             value = getattr(struct, field_definition[0])
-        repr_str += '{field}={value}, \n'.format(field=field_definition[0], value=value)
+        repr_str += " " * depth + '{field}={value}, \n'.format(field=field_definition[0], value=value)
     return repr_str
